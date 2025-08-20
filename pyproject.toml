@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "bikeshare-analytics-assistant"
+version = "0.1.0"
+description = "Natural-language analytics assistant for bike-share PostgreSQL database"
+authors = ["Your Name <you@example.com>"]
+packages = [
+    { include = "src", from = "." }
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.110.0"
+uvicorn = "^0.29.0"
+psycopg2-binary = "^2.9.9"
+openai = "^1.14.3"
+pydantic = "^2.6.4"
+python-dotenv = "^1.0.1"
+scikit-learn = "^1.4.2"
+numpy = "^1.26.4"
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.2.0"
+httpx = "^0.27.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
