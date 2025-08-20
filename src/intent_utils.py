@@ -56,7 +56,7 @@ Question: {q}
         resp = openai.chat.completions.create(
             model="gpt-5",
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=4096,
+            max_completion_tokens=8192,
             timeout=30,
             prompt_cache_key="intent-parsing-v1"
         )
@@ -71,7 +71,7 @@ Question: {q}
             resp2 = openai.chat.completions.create(
                 model="gpt-5",
                 messages=[{"role": "user", "content": prompt2}],
-                max_completion_tokens=4096,
+                max_completion_tokens=8192,
                 timeout=30,
                 prompt_cache_key="intent-parsing-v1"
             )
@@ -288,7 +288,16 @@ def format_chatbot_response(result, question=None):
                 keys = list(row.keys())
                 #Try to use the question for context if available
                 if question:
-                    return f"{row[keys[0]]} had {row[keys[1]]} {keys[1].replace('_', ' ')}."
+                    #Handle common aggregation cases
+                    if keys[1] == 'value' or keys[1] == 'count':
+                        if 'arrival' in question.lower() or 'departure' in question.lower():
+                            return f"{row[keys[0]]} had {row[keys[1]]} arrivals."
+                        elif 'ride' in question.lower():
+                            return f"{row[keys[0]]} had {row[keys[1]]} rides."
+                        else:
+                            return f"{row[keys[0]]} had {row[keys[1]]}."
+                    else:
+                        return f"{row[keys[0]]} had {row[keys[1]]} {keys[1].replace('_', ' ')}."
                 return f"{row[keys[0]]} ({row[keys[1]]})"
             return ", ".join(f"{k}: {v}" for k, v in row.items())
         
