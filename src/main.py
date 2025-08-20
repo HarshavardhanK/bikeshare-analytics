@@ -32,26 +32,26 @@ def ping():
     return {"status": "ok"}
 
 def get_gender_canonical(user_term):
-    # Canonical gender values
+    #Canonical gender values
     canonical = ['female', 'male', 'non-binary', 'other']
     openai.api_key = os.getenv("OPENAI_API_KEY")
-    # Get embeddings for user term and canonical values
+    #Get embeddings for user term and canonical values
     resp = openai.embeddings.create(input=[user_term] + canonical, model="text-embedding-3-small")
     user_emb = np.array(resp.data[0].embedding)
     canon_embs = [np.array(e.embedding) for e in resp.data[1:]]
-    # Find closest canonical value
+    #Find closest canonical value
     sims = [float(np.dot(user_emb, c_emb) / (np.linalg.norm(user_emb) * np.linalg.norm(c_emb))) for c_emb in canon_embs]
     idx = int(np.argmax(sims))
     return canonical[idx]
 
 def postprocess_intent(intent, question):
-    # Add order_by/limit for 'most', 'top', 'least', 'bottom' queries if not present
+    #Add order_by/limit for 'most', 'top', 'least', 'bottom' queries if not present
     q = question.lower()
-    # Robust gender matching for any user term
+    #Robust gender matching for any user term
     gender_terms = ['women', 'woman', 'female', 'females', 'f', 'men', 'man', 'male', 'males', 'm', 'non-binary', 'nonbinary', 'other']
     for w in intent.get('where', []):
         col_name = w['col'].lower()
-        # Generalize: match any column ending with 'rider_gender'
+        #Generalize: match any column ending with 'rider_gender'
         if col_name.endswith('rider_gender'):
             user_val = str(w['val']).lower()
             if any(term in user_val or term in q for term in gender_terms):
@@ -109,7 +109,7 @@ def query(req: QueryRequest):
         result = db.execute(sql, params)
         logging.debug(f"[query] DB result: {result}")
         result = format_result(intent, result, q)
-        # Format for chat UI
+        #Format for chat UI
         display_result = format_chatbot_response(result, q)
         if not result or (isinstance(result, list) and len(result) == 0):
             logging.debug(f"[query] No matching data found")
