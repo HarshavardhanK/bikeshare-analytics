@@ -20,23 +20,43 @@ def fix_json(txt):
     
     return s
 
+def preprocess_question(q):
+    # Rewrite common synonyms and derived attributes
+    q = q.replace('age of riders', '2025 minus birth year of riders')
+    q = q.replace('oldest rider', 'rider with minimum birth year')
+    q = q.replace('youngest rider', 'rider with maximum birth year')
+    q = q.replace('most recently acquired bike', 'bike with latest acquisition date')
+    q = q.replace('longest trip', 'trip with maximum trip_distance_km')
+    q = q.replace('shortest trip', 'trip with minimum trip_distance_km')
+    q = q.replace('lowest capacity', 'minimum station capacity')
+    q = q.replace('highest capacity', 'maximum station capacity')
+    return q
+
 def parse_intent(q, schema):
     openai.api_key = os.getenv("OPENAI_API_KEY")
     schema_str = "\n".join([f"{t}: {', '.join(cols)}" for t, cols in schema.items()])
-    # Add explicit superlative example
+    # Add explicit, diverse examples and a note about unsupported SQL
     prompt = f"""
 Given the following database schema:
 {schema_str}
 
-Parse the following question into a JSON object with keys: select, from, where (list of dicts with col, op, val), group_by, join (list), agg, order_by, limit. Use only columns and tables from the schema. If aggregation is needed, set agg to SUM, AVG, etc. If a filter is needed, add to where. If the question asks for the youngest/oldest/highest/lowest, use ORDER BY and LIMIT 1, and select all requested columns. Example outputs:
+Parse the following question into a JSON object with keys: select, from, where (list of dicts with col, op, val), group_by, join (list), agg, order_by, limit. Use only columns and tables from the schema. If aggregation is needed, set agg to SUM, AVG, etc. If a filter is needed, add to where. If the question asks for the youngest/oldest/highest/lowest, use ORDER BY and LIMIT 1, and select all requested columns. If a join is needed, add the join clause. If a derived attribute is requested (e.g., age = 2025 - birth_year), add the expression in select. If a distinct count is needed, use COUNT(DISTINCT a). Never use unsupported SQL functions like COUNT_DISTINCT(a, b).
+
+Example outputs:
 {{"select": "trip_distance_km", "from": "trips", "where": [{{"col": "rider_gender", "op": "=", "val": "F"}}], "agg": "SUM", "group_by": null, "join": []}}
 {{"select": ["trip_id", "rider_birth_year"], "from": "trips", "where": [{{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "order_by": "rider_birth_year DESC", "limit": 1, "group_by": null, "join": []}}
+{{"select": "SUM(trip_distance_km)", "from": "trips", "where": [{{"col": "bike_model", "op": "=", "val": "E‑Bike"}}, {{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "group_by": null, "join": ["bikes ON trips.bike_id = bikes.bike_id"], "agg": null}}
+{{"select": "AVG(EXTRACT(EPOCH FROM ended_at - started_at)/60.0)", "from": "trips", "where": [{{"col": "station_name", "op": "=", "val": "Congress Avenue"}}, {{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "group_by": null, "join": ["stations ON trips.end_station_id = stations.station_id"], "agg": null}}
+{{"select": "2025 - rider_birth_year", "from": "trips", "where": [{{"col": "trip_distance_km", "op": ">", "val": 5}}, {{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "agg": "AVG", "group_by": null, "join": []}}
+{{"select": ["station_name", "capacity"], "from": "stations", "order_by": "capacity ASC", "limit": 1, "group_by": null, "join": []}}
+{{"select": "COUNT(DISTINCT rider_birth_year)", "from": "trips", "where": [{{"col": "bike_model", "op": "=", "val": "E‑Bike"}}, {{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "group_by": null, "join": ["bikes ON trips.bike_id = bikes.bike_id"], "agg": null}}
+{{"select": ["station_name", "COUNT(*)"], "from": "trips", "where": [{{"col": "started_at", "op": ">=", "val": "2025-06-01"}}, {{"col": "started_at", "op": "<", "val": "2025-07-01"}}], "group_by": "station_name", "join": ["stations ON trips.end_station_id = stations.station_id"], "order_by": "COUNT(*) DESC", "limit": 1}}
 
 Question: {q}
 """
     try:
         resp = openai.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-5",
             messages=[{"role": "user", "content": prompt}],
             max_completion_tokens=1024,
             timeout=30,
@@ -51,7 +71,7 @@ Question: {q}
         if any(word in q.lower() for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"]):
             prompt2 = prompt + "\nIf the question asks for the youngest/oldest, always use ORDER BY and LIMIT 1, and select all requested columns."
             resp2 = openai.chat.completions.create(
-                model="gpt-5-mini",
+                model="gpt-5",
                 messages=[{"role": "user", "content": prompt2}],
                 max_completion_tokens=1024,
                 timeout=30,
@@ -157,6 +177,17 @@ def postprocess_llm_intent(intent, question=None):
         if m and ',' in m.group(1):
             first_col = m.group(1).split(',')[0].strip()
             intent['order_by'] = re.sub(r'COUNT\([^)]+\)', f'COUNT({first_col})', str(intent['order_by']))
+    # Rewrite COUNT_DISTINCT(a, b) as COUNT(DISTINCT a)
+    if 'agg' in intent and isinstance(intent['agg'], str) and 'COUNT_DISTINCT' in intent['agg']:
+        m = re.match(r'COUNT_DISTINCT\(([^,]+)', intent['agg'])
+        if m:
+            intent['agg'] = f"COUNT(DISTINCT {m.group(1).strip()})"
+    if 'select' in intent and isinstance(intent['select'], str) and 'COUNT_DISTINCT' in intent['select']:
+        m = re.match(r'COUNT_DISTINCT\(([^,]+)', intent['select'])
+        if m:
+            intent['select'] = f"COUNT(DISTINCT {m.group(1).strip()})"
+    # If join is needed (columns from multiple tables), ensure join clause is present
+    # If group_by is needed (aggregation with non-aggregated select), ensure group_by is set
     return intent
 
 def tweak_intent(intent, q):

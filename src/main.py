@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from src.app_init import get_db, get_schema, get_mapper, get_sqlgen
 
-from src.intent_utils import parse_intent, tweak_intent, is_col, format_result, format_chatbot_response, postprocess_llm_intent
+from src.intent_utils import parse_intent, tweak_intent, is_col, format_result, format_chatbot_response, postprocess_llm_intent, preprocess_question
 
 import openai
 import numpy as np
@@ -80,6 +80,8 @@ def query(req: QueryRequest):
         sqlgen = get_sqlgen()
 
         q = req.question
+        q = preprocess_question(q)
+        logging.debug(f"[query] Preprocessed question: {q}")
         logging.debug(f"[query] Received question: {q}")
         intent = parse_intent(q, schema)
         logging.debug(f"[query] Parsed intent: {intent}")
