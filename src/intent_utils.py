@@ -56,7 +56,7 @@ Question: {q}
         resp = openai.chat.completions.create(
             model="gpt-5",
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=1024,
+            max_completion_tokens=4096,
             timeout=30,
             prompt_cache_key="intent-parsing-v1"
         )
@@ -66,12 +66,12 @@ Question: {q}
     match = re.search(r'\{[\s\S]*\}', text)
     if not match:
         #Fallback: retry with a more explicit prompt for superlative queries
-        if any(word in q.lower() for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"]):
+        if q and any(word in q.lower() for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"]):
             prompt2 = prompt + "\nIf the question asks for the youngest/oldest, always use ORDER BY and LIMIT 1, and select all requested columns."
             resp2 = openai.chat.completions.create(
                 model="gpt-5",
                 messages=[{"role": "user", "content": prompt2}],
-                max_completion_tokens=1024,
+                max_completion_tokens=4096,
                 timeout=30,
                 prompt_cache_key="intent-parsing-v1"
             )
@@ -107,7 +107,7 @@ def postprocess_llm_intent(intent, question=None):
         intent.pop('agg', None)
     #For superlative queries (youngest/oldest/highest/lowest/top/most/least), add order_by/limit if not present
     if question:
-        q = question.lower()
+        q = question.lower() if question else ""
         superlative = any(word in q for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"])
         if superlative and isinstance(intent.get('select'), list):
             #Guess the right column for order_by (e.g., birth_year for youngest/oldest)
@@ -154,7 +154,7 @@ def postprocess_llm_intent(intent, question=None):
             if w.get('op', '').upper() in ('IS NOT NULL', 'IS NOT'):
                 w.pop('val', None)
                 new_where.append(w)
-            elif w.get('op', '').lower() == 'between' and isinstance(w.get('val'), (list, tuple)) and len(w['val']) == 2:
+            elif w.get('op') and w.get('op', '').lower() == 'between' and isinstance(w.get('val'), (list, tuple)) and len(w['val']) == 2:
                 new_where.append(w)
             elif w.get('val') is not None:
                 new_where.append(w)
@@ -202,7 +202,7 @@ def postprocess_llm_intent(intent, question=None):
 
 def tweak_intent(intent, q):
     #Add order/limit for 'most', 'top', etc
-    s = q.lower()
+    s = q.lower() if q else ""
     
     if ("most" in s or "top" in s or "highest" in s) and intent.get('group_by') and not intent.get('order_by'):
         agg = intent.get('agg', 'COUNT')
@@ -229,7 +229,7 @@ def format_result(intent, result, question):
         return val
     
     def add_units(val, intent, q):
-        s = q.lower()
+        s = q.lower() if q else ""
         if 'kilometre' in s or 'km' in s:
             return f"{val} km"
         if 'minute' in s or 'ride time' in s:
@@ -242,8 +242,17 @@ def format_result(intent, result, question):
         return col
     
     if intent.get('group_by') and isinstance(result, list) and all(isinstance(row, (list, tuple)) and len(row) == 2 for row in result):
-        group_key = get_col(intent['select'])
-        agg_key = intent.get('agg', 'value').lower()
+        #Handle select field which might be a list
+        select_field = intent['select']
+        if isinstance(select_field, list):
+            group_key = get_col(select_field[0])  #Use first element if it's a list
+        else:
+            group_key = get_col(select_field)
+        agg_key = intent.get('agg', 'value')
+        if agg_key is not None:
+            agg_key = agg_key.lower()
+        else:
+            agg_key = 'value'
         
         formatted = [
             {str(group_key): fmt_val(row[0]), str(agg_key): fmt_val(row[1])}

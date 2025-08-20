@@ -46,18 +46,19 @@ def get_gender_canonical(user_term):
 
 def postprocess_intent(intent, question):
     #Add order_by/limit for 'most', 'top', 'least', 'bottom' queries if not present
-    q = question.lower()
+    q = question.lower() if question else ""
     #Robust gender matching for any user term
     gender_terms = ['women', 'woman', 'female', 'females', 'f', 'men', 'man', 'male', 'males', 'm', 'non-binary', 'nonbinary', 'other']
     for w in intent.get('where', []):
-        col_name = w['col'].lower()
-        #Generalize: match any column ending with 'rider_gender'
-        if col_name.endswith('rider_gender'):
-            user_val = str(w['val']).lower()
-            if any(term in user_val or term in q for term in gender_terms):
-                mapped = get_gender_canonical(user_val)
-                w['op'] = 'ILIKE'
-                w['val'] = mapped
+        if w['col'] is not None:
+            col_name = w['col'].lower()
+            #Generalize: match any column ending with 'rider_gender'
+            if col_name.endswith('rider_gender'):
+                user_val = str(w['val']).lower()
+                if any(term in user_val or term in q for term in gender_terms):
+                    mapped = get_gender_canonical(user_val)
+                    w['op'] = 'ILIKE'
+                    w['val'] = mapped
     if ('most' in q or 'top' in q or 'highest' in q) and intent.get('group_by') and not intent.get('order_by'):
         agg = intent.get('agg', 'COUNT')
         group_col = intent['group_by']
@@ -89,19 +90,36 @@ def query(req: QueryRequest):
         logging.debug(f"[query] Postprocessed LLM intent: {intent}")
         intent = tweak_intent(intent, q)
         logging.debug(f"[query] Tweaked intent: {intent}")
-        intent = postprocess_intent(intent, q)
+        intent = postprocess_intent(intent, req.question)
         logging.debug(f"[query] Postprocessed intent: {intent}")
 
-        user_terms = [intent['select']] + [w['col'] for w in intent.get('where',[])]
+        #Build user_terms list, handling select field which might be a list
+        user_terms = []
+        if isinstance(intent['select'], list):
+            user_terms.extend(intent['select'])
+        else:
+            user_terms.append(intent['select'])
+        user_terms.extend([w['col'] for w in intent.get('where',[])])
         mappings = mapper.map(user_terms)
         logging.debug(f"[query] Semantic mappings: {mappings}")
 
-        if is_col(intent['select']) and intent['select'] in mappings:
-            intent['select'] = mappings[intent['select']][1]
+        #Handle select mapping - could be a list or single value
+        if isinstance(intent['select'], str) and is_col(intent['select']) and intent['select'] in mappings:
+            mapping = mappings[intent['select']]
+            if isinstance(mapping, list):
+                #If it's a list, use the first mapping
+                intent['select'] = mapping[0][1]
+            else:
+                intent['select'] = mapping[1]
 
         for i, w in enumerate(intent.get('where', [])):
-            if is_col(w['col']) and w['col'] in mappings:
-                intent['where'][i]['col'] = mappings[w['col']][1]
+            if isinstance(w['col'], str) and is_col(w['col']) and w['col'] in mappings:
+                mapping = mappings[w['col']]
+                if isinstance(mapping, list):
+                    #If it's a list, use the first mapping
+                    intent['where'][i]['col'] = mapping[0][1]
+                else:
+                    intent['where'][i]['col'] = mapping[1]
 
         sql, params = sqlgen.generate(intent, mappings)
         logging.debug(f"[query] Generated SQL: {sql}")
@@ -120,10 +138,10 @@ def query(req: QueryRequest):
         logging.error("Exception in /query: %s", e)
         logging.error(traceback.format_exc())
         msg = str(e)
-        if 'could not parse intent' in msg.lower():
+        if msg and 'could not parse intent' in msg.lower():
             msg = "Sorry, I couldn't understand your question. Please rephrase."
-        elif 'no such column' in msg.lower() or 'does not exist' in msg.lower():
+        elif msg and ('no such column' in msg.lower() or 'does not exist' in msg.lower()):
             msg = "Sorry, I couldn't find the right data for your question."
-        elif 'syntax error' in msg.lower():
+        elif msg and 'syntax error' in msg.lower():
             msg = "Sorry, there was a problem with the generated query."
         return QueryResponse(sql="", result=None, error=msg)

@@ -53,11 +53,11 @@ class SQLGenerator:
         if where:
             for w in where:
                 #Robust gender matching
-                if w['col'].lower() == 'rider_gender':
+                if w['col'] and w['col'].lower() == 'rider_gender':
                     conds.append("LOWER(rider_gender) = LOWER(%s)")
                     values.append(w['val'])
                 #BETWEEN handling
-                elif w['op'].lower() == 'between' and isinstance(w['val'], (list, tuple)) and len(w['val']) == 2:
+                elif w['op'] and w['op'].lower() == 'between' and isinstance(w['val'], (list, tuple)) and len(w['val']) == 2:
                     conds.append(f"{w['col']} BETWEEN %s AND %s")
                     values.extend(w['val'])
                 #IS NOT NULL/IS NOT
@@ -79,7 +79,7 @@ class SQLGenerator:
         #If order_by is a list, join with commas
         if isinstance(order_by, list):
             order_by_clause = f" ORDER BY {', '.join(order_by)}"
-        elif order_by and isinstance(order_by, str) and order_by.startswith("COUNT(["):
+        elif order_by and isinstance(order_by, str) and order_by and order_by.startswith("COUNT(["):
             #Extract first column from list
             m = re.match(r"COUNT\(\[([^\]]+)\]\)", order_by)
             if m:
