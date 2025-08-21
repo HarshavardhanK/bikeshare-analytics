@@ -3,11 +3,11 @@ import os
 from datetime import datetime
 
 DB_PARAMS = dict(
-    dbname='bike-share-assessment',
-    user='attriassessment',
-    password='(.aG0X>322Uk',
-    host='agentify-assessment.postgres.database.azure.com',
-    port=5432
+    dbname=os.getenv('POSTGRES_DB', 'bike-share-assessment'),
+    user=os.getenv('POSTGRES_USER', 'attriassessment'),
+    password=os.getenv('POSTGRES_PASSWORD'),
+    host=os.getenv('POSTGRES_HOST', 'agentify-assessment.postgres.database.azure.com'),
+    port=int(os.getenv('POSTGRES_PORT', 5432))
 )
 
 def run_query(sql, params=None):

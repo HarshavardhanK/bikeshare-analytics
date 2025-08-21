@@ -1,9 +1,11 @@
 #Handles DB connection and schema stuff
 
 import os
+import logging
 from dotenv import load_dotenv
 load_dotenv()
 import psycopg2
+from psycopg2.pool import SimpleConnectionPool
 
 class Database:
     def __init__(self):
@@ -12,14 +14,23 @@ class Database:
         password = os.getenv("POSTGRES_PASSWORD")
         host = os.getenv("POSTGRES_HOST")
         port = os.getenv("POSTGRES_PORT", 5432)
-        print(f"Connecting to DB: dbname={dbname}, user={user}, host={host}, port={port}")
-        self.conn = psycopg2.connect(
-            dbname=dbname,
-            user=user,
-            password=password,
-            host=host,
-            port=port
-        )
+        sslmode = os.getenv("PGSSLMODE", "prefer")
+        
+        logging.info(f"Connecting to DB: dbname={dbname}, user={user}, host={host}, port={port}, sslmode={sslmode}")
+        
+        #Connection parameters with SSL support
+        conn_params = {
+            'dbname': dbname,
+            'user': user,
+            'password': password,
+            'host': host,
+            'port': port,
+            'sslmode': sslmode
+        }
+        
+        #Create connection pool for better performance
+        self.pool = SimpleConnectionPool(1, 10, **conn_params)
+        self.conn = self.pool.getconn()
 
     def get_schema(self):
         cur = self.conn.cursor()
@@ -36,7 +47,8 @@ class Database:
         return schema
 
     def execute(self, sql, params=None):
-        cur = self.conn.cursor()
+        conn = self.pool.getconn()
+        cur = conn.cursor()
         try:
             cur.execute(sql, params or [])
             try:
@@ -44,9 +56,11 @@ class Database:
             except Exception:
                 result = None
             cur.close()
+            self.pool.putconn(conn)
             return result
         except Exception as e:
-            print(f"[ERROR] DB error: {e}")
-            self.conn.rollback()
+            logging.error(f"DB error: {e}")
+            conn.rollback()
             cur.close()
+            self.pool.putconn(conn)
             raise

@@ -5,11 +5,11 @@ import os
 from decimal import Decimal
 
 DB_PARAMS = dict(
-    dbname='bike-share-assessment',
-    user='attriassessment',
-    password='(.aG0X>322Uk',
-    host='agentify-assessment.postgres.database.azure.com',
-    port=5432
+    dbname=os.getenv('POSTGRES_DB', 'bike-share-assessment'),
+    user=os.getenv('POSTGRES_USER', 'attriassessment'),
+    password=os.getenv('POSTGRES_PASSWORD'),
+    host=os.getenv('POSTGRES_HOST', 'agentify-assessment.postgres.database.azure.com'),
+    port=int(os.getenv('POSTGRES_PORT', 5432))
 )
 API_URL = 'http://localhost:8000/query'
 
@@ -206,7 +206,7 @@ async def main():
     total = len(results)
     correct = sum(1 for r in results if r[3])
     for i, (q, api, gt, ok) in enumerate(results, 1):
-        print(f"Q{i}: {q}\n  API: {api}\n  GT: {gt}\n  {'✅' if ok else '❌'}\n")
+        print(f"Q{i}: {q}\n  API: {api}\n  GT: {gt}\n  {'PASS' if ok else 'FAIL'}\n")
     print(f"Overall accuracy: {correct}/{total} = {round(100*correct/total,1)}%\n")
 
 if __name__ == "__main__":

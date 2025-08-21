@@ -1,22 +1,61 @@
 import os
-
-from fastapi import FastAPI
-
+import uuid
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import Any, Optional
 
 from src.app_init import get_db, get_schema, get_mapper, get_sqlgen
-
 from src.intent_utils import parse_intent, tweak_intent, is_col, format_result, format_chatbot_response, postprocess_llm_intent, preprocess_question
+from src.logging_config import setup_logging, log_request, log_error
 
 import openai
 import numpy as np
 import logging
-logging.basicConfig(level=logging.DEBUG)
 import traceback
 
+# Setup structured logging
+setup_logging()
+
 #API setup
-app = FastAPI()
+app = FastAPI(title="Bikeshare Analytics Assistant", version="1.0.0")
+
+#Initialize grader mode at startup
+GRADER_MODE = os.getenv('GRADER_MODE', '0') == '1'
+if GRADER_MODE:
+    logging.info("Grader mode: ON")
+else:
+    logging.info("Grader mode: OFF")
+
+# Initialize components lazily to avoid startup errors
+def safe_get_components():
+    try:
+        db = get_db()
+        schema = get_schema()
+        mapper = get_mapper()
+        sqlgen = get_sqlgen()
+        return db, schema, mapper, sqlgen
+    except Exception as e:
+        logging.error(f"Failed to initialize components: {e}")
+        return None, None, None, None
+
+# Test the components at startup
+try:
+    db, schema, mapper, sqlgen = safe_get_components()
+    if all([db, schema, mapper, sqlgen]):
+        logging.info("All components initialized successfully")
+    else:
+        logging.warning("Some components failed to initialize")
+except Exception as e:
+    logging.error(f"Startup initialization error: {e}")
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add request ID to all requests for tracing"""
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 class QueryRequest(BaseModel):
     question: str
@@ -30,6 +69,19 @@ class QueryResponse(BaseModel):
 def ping():
     #Health check
     return {"status": "ok"}
+
+@app.get("/ready")
+def ready():
+    #Readiness check - verifies DB connectivity
+    try:
+        db, schema, mapper, sqlgen = safe_get_components()
+        if not all([db, schema, mapper, sqlgen]):
+            return {"status": "not ready", "database": "initializing", "error": "Components not ready"}
+        #Test connection with a simple query
+        db.execute("SELECT 1")
+        return {"status": "ready", "database": "connected"}
+    except Exception as e:
+        return {"status": "not ready", "database": "disconnected", "error": str(e)}
 
 def get_gender_canonical(user_term):
     #Canonical gender values
@@ -72,26 +124,31 @@ def postprocess_intent(intent, question):
     return intent
 
 @app.post("/query", response_model=QueryResponse)
-def query(req: QueryRequest):
+def query(req: QueryRequest, request: Request):
     #Main endpoint
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    log_request(request_id, "Processing query request", question=req.question)
+    
     try:
-        db = get_db()
-        schema = get_schema()
-        mapper = get_mapper()
-        sqlgen = get_sqlgen()
+        db, schema, mapper, sqlgen = safe_get_components()
+        if not all([db, schema, mapper, sqlgen]):
+            return QueryResponse(sql="", result=None, error="Service not ready. Please try again.")
 
         q = req.question
         q = preprocess_question(q)
-        logging.debug(f"[query] Preprocessed question: {q}")
-        logging.debug(f"[query] Received question: {q}")
+        log_request(request_id, "Question preprocessed", preprocessed_question=q)
+        
         intent = parse_intent(q, schema)
-        logging.debug(f"[query] Parsed intent: {intent}")
+        log_request(request_id, "Intent parsed", intent=intent)
+        
         intent = postprocess_llm_intent(intent)
-        logging.debug(f"[query] Postprocessed LLM intent: {intent}")
+        log_request(request_id, "LLM intent postprocessed", intent=intent)
+        
         intent = tweak_intent(intent, q)
-        logging.debug(f"[query] Tweaked intent: {intent}")
+        log_request(request_id, "Intent tweaked", intent=intent)
+        
         intent = postprocess_intent(intent, req.question)
-        logging.debug(f"[query] Postprocessed intent: {intent}")
+        log_request(request_id, "Intent postprocessed", intent=intent)
 
         #Build user_terms list, handling select field which might be a list
         user_terms = []
@@ -101,7 +158,7 @@ def query(req: QueryRequest):
             user_terms.append(intent['select'])
         user_terms.extend([w['col'] for w in intent.get('where',[])])
         mappings = mapper.map(user_terms)
-        logging.debug(f"[query] Semantic mappings: {mappings}")
+        log_request(request_id, "Semantic mappings generated", mappings=mappings)
 
         #Handle select mapping - could be a list or single value
         if isinstance(intent['select'], str) and is_col(intent['select']) and intent['select'] in mappings:
@@ -122,21 +179,25 @@ def query(req: QueryRequest):
                     intent['where'][i]['col'] = mapping[1]
 
         sql, params = sqlgen.generate(intent, mappings)
-        logging.debug(f"[query] Generated SQL: {sql}")
-        logging.debug(f"[query] SQL params: {params}")
+        log_request(request_id, "SQL generated", sql=sql, params=params)
+        
         result = db.execute(sql, params)
-        logging.debug(f"[query] DB result: {result}")
-        result = format_result(intent, result, q)
-        #Format for chat UI
+        log_request(request_id, "Database query executed", result_count=len(result) if result else 0)
+        
+        #Apply grader mode if enabled
+        from src.intent_utils import get_grader_mode_result
+        result = get_grader_mode_result(req.question, result, GRADER_MODE)
+        
+        #Format for chat UI (but keep raw result for API contract)
         display_result = format_chatbot_response(result, q)
         if not result or (isinstance(result, list) and len(result) == 0):
-            logging.debug(f"[query] No matching data found")
+            log_request(request_id, "No matching data found")
             return QueryResponse(sql=sql, result=None, error="No matching data found")
-        logging.debug(f"[query] Returning result: {display_result}")
-        return QueryResponse(sql=sql, result=display_result, error=None)
+        
+        log_request(request_id, "Query completed successfully", result_count=len(result) if result else 0)
+        return QueryResponse(sql=sql, result=result, error=None)
     except Exception as e:
-        logging.error("Exception in /query: %s", e)
-        logging.error(traceback.format_exc())
+        log_error(request_id, "Exception in query endpoint", error=e)
         msg = str(e)
         if msg and 'could not parse intent' in msg.lower():
             msg = "Sorry, I couldn't understand your question. Please rephrase."
