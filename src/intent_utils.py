@@ -53,11 +53,10 @@ Question: {q}
 """
     try:
         resp = openai.chat.completions.create(
-            model="gpt-5",
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=8192,
-            timeout=30,
-            prompt_cache_key="intent-parsing-v1"
+            max_tokens=4000,
+            timeout=30
         )
         text = resp.choices[0].message.content if resp.choices and resp.choices[0].message else ""
     except Exception as e:
@@ -68,11 +67,10 @@ Question: {q}
         if q and any(word in q.lower() for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"]):
             prompt2 = prompt + "\nIf the question asks for the youngest/oldest, always use ORDER BY and LIMIT 1, and select all requested columns."
             resp2 = openai.chat.completions.create(
-                model="gpt-5",
+                model="gpt-4",
                 messages=[{"role": "user", "content": prompt2}],
-                max_completion_tokens=8192,
-                timeout=30,
-                prompt_cache_key="intent-parsing-v1"
+                max_tokens=4000,
+                timeout=30
             )
             text2 = resp2.choices[0].message.content if resp2.choices and resp2.choices[0].message else ""
             match2 = re.search(r'\{[\s\S]*\}', text2)
@@ -310,12 +308,11 @@ Format the result as a simple string answer:
 """
         
         resp = openai.chat.completions.create(
-            model="gpt-5",
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
-            max_completion_tokens=256,
+            max_tokens=256,
             timeout=10,
-            temperature=0,  #Ensure deterministic output
-            prompt_cache_key="result-formatting-v1"
+            temperature=0  #Ensure deterministic output
         )
         
         formatted_result = resp.choices[0].message.content.strip()
