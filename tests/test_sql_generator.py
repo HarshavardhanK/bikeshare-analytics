@@ -1,7 +1,7 @@
 #Tests for SQL generation logic.
 
 import pytest
-from sql_generator import SQLGenerator
+from src.sql_generator import SQLGenerator
 
 #TODO: Mock schema and mappings for tests
 

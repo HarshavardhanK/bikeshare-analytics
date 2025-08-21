@@ -53,9 +53,9 @@ Question: {q}
 """
     try:
         resp = openai.chat.completions.create(
-            model="gpt-4",
+            model="gpt-5",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
+            max_completion_tokens=4000,
             timeout=30
         )
         text = resp.choices[0].message.content if resp.choices and resp.choices[0].message else ""
@@ -67,9 +67,9 @@ Question: {q}
         if q and any(word in q.lower() for word in ["youngest", "oldest", "highest", "lowest", "top", "most", "least"]):
             prompt2 = prompt + "\nIf the question asks for the youngest/oldest, always use ORDER BY and LIMIT 1, and select all requested columns."
             resp2 = openai.chat.completions.create(
-                model="gpt-4",
+                model="gpt-5",
                 messages=[{"role": "user", "content": prompt2}],
-                max_tokens=4000,
+                max_completion_tokens=4000,
                 timeout=30
             )
             text2 = resp2.choices[0].message.content if resp2.choices and resp2.choices[0].message else ""
@@ -248,44 +248,51 @@ def get_date_range(description):
     return None, None
 
 def get_grader_mode_result(question, result, grader_mode=False):
-    """Handle grader mode for public test compatibility"""
-    if not grader_mode:
+    """Use LLM to intelligently format results based on question context"""
+    if not grader_mode or not question or not result:
         return result
     
-    #Use semantic matching without hardcoding specific entities
-    q_lower = question.lower() if question else ""
+    #First format the raw result to handle nested structures
+    formatted_result = format_chatbot_response(result, question)
     
-    #Helper function to check for whole word matches
-    def has_word(text, word):
-        import re
-        return bool(re.search(r'\b' + re.escape(word) + r'\b', text))
-    
-    #Check for time period indicators (required for grader mode to trigger)
-    time_indicators = ['2025', 'june', 'month', 'week', 'first week', 'last month', 'period']
-    has_time_period = any(has_word(q_lower, indicator) for indicator in time_indicators)
-    
-    if not has_time_period:
-        return result
-    
-    #Pattern 1: Women's distance with rainy weather requirement
-    if (has_word(q_lower, 'kilometres') or has_word(q_lower, 'kilometre')) and has_word(q_lower, 'women') and (
-        has_word(q_lower, 'rain') or has_word(q_lower, 'rainy') or has_word(q_lower, 'rainfall')):
-        return "6.8 km"
-    
-    #Pattern 2: Average ride time at Congress Avenue
-    if (has_word(q_lower, 'average') and has_word(q_lower, 'ride') and has_word(q_lower, 'time') and 
-        has_word(q_lower, 'congress') and has_word(q_lower, 'avenue')):
-        return "25 minutes"
-    
-    #Pattern 3: Most departures/arrivals at docking point (prefer departures)
-    if (has_word(q_lower, 'docking') or has_word(q_lower, 'dock')) and has_word(q_lower, 'point') and has_word(q_lower, 'most'):
-        #Check for departures first (preferred), then arrivals
-        if has_word(q_lower, 'departures') or has_word(q_lower, 'departure'):
-            return "Congress Avenue"
-        elif has_word(q_lower, 'arrivals') or has_word(q_lower, 'arrival'):
-            return "Congress Avenue"
-    
-    return result
+    try:
+        #Use LLM to understand the question and format the result appropriately
+        prompt = f"""
+You are a helpful assistant that formats database query results into natural language answers.
+
+Question: {question}
+Query Result: {formatted_result}
+
+Please format the result as a natural, concise answer that directly responds to the question.
+- For distances, use "km" units if appropriate
+- For times, use "minutes" or "min" units if appropriate
+- For counts, use appropriate nouns (e.g., "rides", "arrivals")
+- For station names, return just the station name
+- Be specific and accurate to the data
+- Keep the answer concise and natural
+
+Format the result as a simple string answer:
+"""
+        
+        resp = openai.chat.completions.create(
+            model="gpt-5",
+            messages=[{"role": "user", "content": prompt}],
+            max_completion_tokens=1024,
+            timeout=30,
+            temperature=0  #Ensure deterministic output
+        )
+        
+        llm_formatted = resp.choices[0].message.content.strip()
+        
+        #Fallback to formatted result if LLM fails
+        if not llm_formatted or len(llm_formatted) > 200:
+            return formatted_result
+            
+        return llm_formatted
+        
+    except Exception as e:
+        #Fallback to formatted result if LLM call fails
+        return formatted_result
 
 def post_process_result_with_llm(result, question, intent):
     """Use LLM to intelligently format the result based on the question context"""
@@ -308,9 +315,9 @@ Format the result as a simple string answer:
 """
         
         resp = openai.chat.completions.create(
-            model="gpt-4",
+            model="gpt-5",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=256,
+            max_completion_tokens=256,
             timeout=10,
             temperature=0  #Ensure deterministic output
         )
@@ -335,12 +342,47 @@ def format_result(intent, result, question):
         return val
     
     def add_units(val, intent, q):
-        s = q.lower() if q else ""
-        if 'kilometre' in s or 'km' in s:
-            return f"{val} km"
-        if 'minute' in s or 'ride time' in s:
-            return f"{val} min"
-        return val
+        #Use LLM to intelligently add units based on context
+        if not q or not isinstance(val, (int, float, Decimal)):
+            return val
+            
+        try:
+            prompt = f"""
+You are a helpful assistant that adds appropriate units to numeric values based on context.
+
+Question: {q}
+Value: {val}
+Query Intent: {intent}
+
+Please add appropriate units to the value if needed:
+- For distances, add "km" if appropriate
+- For times, add "minutes" or "min" if appropriate
+- For counts, no units needed
+- For percentages, add "%" if appropriate
+- Only add units if they make sense in context
+
+Return just the formatted value with units:
+"""
+            
+            resp = openai.chat.completions.create(
+                model="gpt-5",
+                messages=[{"role": "user", "content": prompt}],
+                max_completion_tokens=50,
+                timeout=5,
+                temperature=0
+            )
+            
+            formatted_val = resp.choices[0].message.content.strip()
+            
+            #Fallback to original value if LLM fails
+            if not formatted_val or len(formatted_val) > 50:
+                return val
+                
+            return formatted_val
+            
+        except Exception as e:
+            #Fallback to original value if LLM call fails
+            return val
     
     def get_col(col):
         if '.' in col:
@@ -391,6 +433,18 @@ def format_chatbot_response(result, question=None):
     if result is None:
         return "No data found."
     
+    #Handle nested list structure from database results
+    if isinstance(result, list) and len(result) == 1:
+        if isinstance(result[0], list) and len(result[0]) == 1:
+            #Single aggregation result like [['25.0000000000000000']] -> 25.0
+            result = result[0][0]
+        elif isinstance(result[0], (list, tuple)) and len(result[0]) == 1:
+            #Single aggregation result like [('25.0',)] -> 25.0
+            result = result[0][0]
+        elif isinstance(result[0], (list, tuple)) and len(result[0]) == 2:
+            #Two-column result like [('Congress Avenue', 4)] -> extract first column
+            result = result[0][0]
+    
     if isinstance(result, list):
         if len(result) == 1 and isinstance(result[0], dict):
             row = result[0]
@@ -427,3 +481,171 @@ def format_chatbot_response(result, question=None):
     
     else:
         return str(result)
+
+import re
+from typing import Any, Dict, Optional
+
+def _unwrap_db_result(result: Any) -> Any:
+    """
+    Normalize common DB driver shapes into a scalar/string/tuple.
+    Examples:
+      [[Decimal('25.0')]] -> 25.0
+      [(25.0,)]          -> 25.0
+      [('Congress Ave', 4)] -> ('Congress Ave', 4)
+      None               -> None
+    """
+    if result is None:
+        return None
+
+    # Single-row wrappers
+    if isinstance(result, (list, tuple)) and len(result) == 1:
+        first = result[0]
+        # Single-column
+        if isinstance(first, (list, tuple)) and len(first) == 1:
+            return first[0]
+        # Two-column (e.g., (station, count)) -> keep tuple; caller may extract first
+        if isinstance(first, (list, tuple)) and len(first) == 2:
+            return tuple(first)
+        # Scalar nested as list
+        if not isinstance(first, (list, tuple)):
+            return first
+
+    return result
+
+def _normalize_sql(sql: Optional[str]) -> str:
+    return (sql or "").strip().upper()
+
+def _looks_like_duration_query(sqlU: str) -> bool:
+    # Detect common duration/time patterns
+    return any(p in sqlU for p in (
+        "EXTRACT(EPOCH FROM",
+        "AVG(EXTRACT(EPOCH FROM",
+        "ENDED_AT - STARTED_AT",
+        "START_TIME",
+        "END_TIME"
+    )) and ("AVG(" in sqlU or "SUM(" in sqlU or " /60" in sqlU or "/ 60" in sqlU)
+
+def _looks_like_distance_query(sqlU: str) -> bool:
+    # Detect common distance expressions/aliases
+    return any(p in sqlU for p in (
+        "DISTANCE_KM",
+        "TRIP_DISTANCE_KM",
+        "SUM(DISTANCE",
+        "SUM(TRIP_DISTANCE",
+        "AVG(DISTANCE",
+    ))
+
+def _looks_like_station_pick(sqlU: str) -> bool:
+    # Top-1 station queries via ordering
+    if "ORDER BY" in sqlU and "DESC" in sqlU and "LIMIT 1" in sqlU:
+        return any(p in sqlU for p in ("STATION_NAME", "DOCKING", "STATION"))
+    return False
+
+def _looks_like_count(sqlU: str) -> bool:
+    return "COUNT(" in sqlU
+
+def _infer_units_from_schema(sqlU: str, schema_meta: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Optional: infer units by column names/types discovered at runtime.
+    schema_meta is expected to look like:
+      {
+        "columns": [{"table": "trips", "column": "trip_distance_meters", "data_type": "numeric"}, ...],
+        "units": {"trip_distance_meters": "meters", "ride_duration_seconds": "seconds"}
+      }
+    Returns a dict of preferred output units for this query, e.g. {"distance": "km", "duration": "minutes"}
+    """
+    out = {}
+    if not schema_meta:
+        return out
+
+    # 1) explicit units map from discovery step
+    units_map = {k.lower(): v for k, v in (schema_meta.get("units") or {}).items()}
+
+    # If SQL mentions a column we know is meters/seconds, set output target
+    for col, unit in units_map.items():
+        if col.upper() in sqlU:
+            if unit in ("meter", "meters"):
+                out["distance"] = "km"
+            if unit in ("second", "seconds"):
+                out["duration"] = "minutes"
+
+    # 2) heuristic by column name if no explicit units
+    if "distance" not in out:
+        if re.search(r"METER(S)?\b", sqlU):
+            out["distance"] = "km"
+    if "duration" not in out:
+        if re.search(r"SECOND(S)?\b", sqlU):
+            out["duration"] = "minutes"
+
+    return out
+
+def format_result_deterministic(sql: Optional[str], result: Any, schema_meta: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Deterministic result formatting based on:
+      - Executed SQL text (structure/aggregates)
+      - Optional schema metadata (from information_schema + your discovery)
+      - No hardcoded answers or question pattern matching
+
+    Returns a display string. If there's genuinely no data, returns "No data found".
+    """
+    sqlU = _normalize_sql(sql)
+    scalar = _unwrap_db_result(result)
+
+    # Handle true empties
+    if scalar is None:
+        return "No data found"
+    if isinstance(scalar, (list, tuple)) and len(scalar) == 0:
+        return "No data found"
+
+    # Infer target units if schema provided
+    target_units = _infer_units_from_schema(sqlU, schema_meta)
+
+    # ---- Rule A: Station top-1 (name only) ----
+    if _looks_like_station_pick(sqlU):
+        # If tuple like ('Congress Avenue', 4) return first element; else str(scalar)
+        if isinstance(scalar, (list, tuple)) and len(scalar) >= 1:
+            return str(scalar[0])
+        return str(scalar)
+
+    # ---- Rule B: Duration/time → minutes (rounded) ----
+    if _looks_like_duration_query(sqlU) or target_units.get("duration") == "minutes":
+        try:
+            value = float(scalar)  # seconds or minutes; your SQL should already /60 for minutes
+            # If still in seconds (heuristic): large values likely seconds; divide then round
+            # Leave as-is if the SQL already divided by 60.
+            if "EXTRACT(EPOCH FROM" in sqlU and "/60" not in sqlU and "/ 60" not in sqlU:
+                value = value / 60.0
+            minutes = int(round(value))
+            return f"{minutes} minutes"
+        except (ValueError, TypeError):
+            # Fallback to raw
+            return str(scalar)
+
+    # ---- Rule C: Distance → km (one decimal) ----
+    if _looks_like_distance_query(sqlU) or target_units.get("distance") == "km":
+        try:
+            value = float(scalar)  # meters or km depending on SQL; prefer km output
+            # If SQL likely produced meters, convert; heuristic if keyword appears
+            if any(k in sqlU for k in ("METER", "METERS")) and not any(k in sqlU for k in ("KM", "KILOMETRE", "KILOMETER")):
+                value = value / 1000.0
+            return f"{value:.1f} km"
+        except (ValueError, TypeError):
+            return str(scalar)
+
+    # ---- Rule D: COUNT(*) or obvious integer counts ----
+    if _looks_like_count(sqlU):
+        try:
+            return str(int(float(scalar)))
+        except (ValueError, TypeError):
+            return str(scalar)
+
+    # ---- Rule E: Generic numeric passthrough (stable string) ----
+    try:
+        num = float(scalar)
+        # Keep a compact, stable representation
+        if abs(num - int(num)) < 1e-9:
+            return str(int(num))
+        return str(num)
+    except (ValueError, TypeError):
+        # ---- Rule F: Fallback string ----
+        return str(scalar)

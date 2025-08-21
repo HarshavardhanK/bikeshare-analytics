@@ -23,7 +23,7 @@ def get_schema():
 def get_mapper():
     global _mapper
     if _mapper is None:
-        _mapper = SemanticMapper(get_schema())
+        _mapper = SemanticMapper(get_schema(), get_db())
     return _mapper
 
 def get_sqlgen():

@@ -19,12 +19,8 @@ setup_logging()
 #API setup
 app = FastAPI(title="Bikeshare Analytics Assistant", version="1.0.0")
 
-#Initialize grader mode at startup
-GRADER_MODE = os.getenv('GRADER_MODE', '0') == '1'
-if GRADER_MODE:
-    logging.info("Grader mode: ON")
-else:
-    logging.info("Grader mode: OFF")
+#Deterministic formatting enabled
+logging.info("Deterministic result formatting enabled")
 
 # Initialize components lazily to avoid startup errors
 def safe_get_components():
@@ -83,34 +79,44 @@ def ready():
     except Exception as e:
         return {"status": "not ready", "database": "disconnected", "error": str(e)}
 
-def get_gender_canonical(user_term):
-    #Canonical gender values
-    canonical = ['female', 'male', 'non-binary', 'other']
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    #Get embeddings for user term and canonical values
-    resp = openai.embeddings.create(input=[user_term] + canonical, model="text-embedding-3-small")
-    user_emb = np.array(resp.data[0].embedding)
-    canon_embs = [np.array(e.embedding) for e in resp.data[1:]]
-    #Find closest canonical value
-    sims = [float(np.dot(user_emb, c_emb) / (np.linalg.norm(user_emb) * np.linalg.norm(c_emb))) for c_emb in canon_embs]
-    idx = int(np.argmax(sims))
-    return canonical[idx]
+
+
+def resolve_intent_values(intent, mapper):
+    """Resolve values in intent using domain cache for categorical columns"""
+    if 'where' not in intent:
+        return intent
+        
+    for where_clause in intent['where']:
+        if 'col' in where_clause and 'val' in where_clause:
+            column = where_clause['col']
+            value = where_clause['val']
+            
+            # Try to resolve the value using domain cache
+            # First, try to find the table for this column
+            table_name = None
+            for table, columns in mapper.schema.items():
+                if column in columns:
+                    table_name = table
+                    break
+            
+            if table_name:
+                column_fqn = f"{table_name}.{column}"
+                resolved_value = mapper.resolve_value(column_fqn, str(value))
+                if resolved_value:
+                    where_clause['val'] = resolved_value
+                    logging.info(f"Resolved '{value}' to '{resolved_value}' for column {column_fqn}")
+                else:
+                    logging.warning(f"Could not resolve '{value}' for column {column_fqn}")
+    
+    return intent
 
 def postprocess_intent(intent, question):
     #Add order_by/limit for 'most', 'top', 'least', 'bottom' queries if not present
     q = question.lower() if question else ""
-    #Robust gender matching for any user term
-    gender_terms = ['women', 'woman', 'female', 'females', 'f', 'men', 'man', 'male', 'males', 'm', 'non-binary', 'nonbinary', 'other']
-    for w in intent.get('where', []):
-        if w['col'] is not None:
-            col_name = w['col'].lower()
-            #Generalize: match any column ending with 'rider_gender'
-            if col_name.endswith('rider_gender'):
-                user_val = str(w['val']).lower()
-                if any(term in user_val or term in q for term in gender_terms):
-                    mapped = get_gender_canonical(user_val)
-                    w['op'] = 'ILIKE'
-                    w['val'] = mapped
+    
+    #Remove hardcoded gender matching to avoid violating semantic mapping principles
+    #The semantic mapper should handle all term mappings dynamically
+    
     if ('most' in q or 'top' in q or 'highest' in q) and intent.get('group_by') and not intent.get('order_by'):
         agg = intent.get('agg', 'COUNT')
         group_col = intent['group_by']
@@ -150,6 +156,10 @@ def query(req: QueryRequest, request: Request):
         intent = postprocess_intent(intent, req.question)
         log_request(request_id, "Intent postprocessed", intent=intent)
 
+        #Resolve values using domain cache for categorical columns
+        intent = resolve_intent_values(intent, mapper)
+        log_request(request_id, "Values resolved", intent=intent)
+
         #Build user_terms list, handling select field which might be a list
         user_terms = []
         if isinstance(intent['select'], list):
@@ -184,18 +194,17 @@ def query(req: QueryRequest, request: Request):
         result = db.execute(sql, params)
         log_request(request_id, "Database query executed", result_count=len(result) if result else 0)
         
-        #Apply grader mode if enabled
-        from src.intent_utils import get_grader_mode_result
-        result = get_grader_mode_result(req.question, result, GRADER_MODE)
+        #Format result using deterministic rules based on SQL analysis
+        from src.intent_utils import format_result_deterministic
+        display_result = format_result_deterministic(sql, result)
         
-        #Format for chat UI (but keep raw result for API contract)
-        display_result = format_chatbot_response(result, q)
-        if not result or (isinstance(result, list) and len(result) == 0):
+        #Handle "No data found" case properly
+        if display_result == "No data found":
             log_request(request_id, "No matching data found")
             return QueryResponse(sql=sql, result=None, error="No matching data found")
         
-        log_request(request_id, "Query completed successfully", result_count=len(result) if result else 0)
-        return QueryResponse(sql=sql, result=result, error=None)
+        log_request(request_id, "Query completed successfully", result_count=len(result) if isinstance(result, (list, tuple)) else 1 if result else 0)
+        return QueryResponse(sql=sql, result=display_result, error=None)
     except Exception as e:
         log_error(request_id, "Exception in query endpoint", error=e)
         msg = str(e)

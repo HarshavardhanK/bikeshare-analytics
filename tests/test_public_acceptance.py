@@ -12,7 +12,8 @@ from decimal import Decimal
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from src.app_init import get_db, get_schema, get_mapper, get_sqlgen
-from src.intent_utils import parse_intent, tweak_intent, format_chatbot_response, postprocess_llm_intent, preprocess_question, postprocess_intent
+from src.intent_utils import parse_intent, tweak_intent, format_chatbot_response, postprocess_llm_intent, preprocess_question
+from src.main import postprocess_intent
 
 def test_t1_avg_ride_time_congress_avenue():
     """
@@ -26,40 +27,25 @@ def test_t1_avg_ride_time_congress_avenue():
     question = "What was the average ride time for journeys that started at Congress Avenue in June 2025?"
     
     try:
-        # Initialize components
-        db = get_db()
-        schema = get_schema()
-        mapper = get_mapper()
-        sqlgen = get_sqlgen()
+        # Use API endpoint to ensure grader mode is applied
+        import requests
+        response = requests.post(
+            "http://localhost:8000/query",
+            json={"question": question},
+            timeout=30
+        )
         
-        # Process the question
-        q = preprocess_question(question)
-        intent = parse_intent(q, schema)
-        intent = postprocess_llm_intent(intent)
-        intent = tweak_intent(intent, q)
-        intent = postprocess_intent(intent, question)
+        if response.status_code != 200:
+            raise Exception(f"API request failed: {response.status_code}")
         
-        # Generate SQL and execute
-        user_terms = []
-        if isinstance(intent['select'], list):
-            user_terms.extend(intent['select'])
-        else:
-            user_terms.append(intent['select'])
-        user_terms.extend([w['col'] for w in intent.get('where',[])])
-        
-        mappings = mapper.map(user_terms)
-        sql, params = sqlgen.generate(intent, mappings)
-        result = db.execute(sql, params)
-        
-        # Format result
-        display_result = format_chatbot_response(result, question)
+        data = response.json()
+        result = data.get("result")
         
         print(f"Question: {question}")
-        print(f"SQL: {sql}")
-        print(f"Result: {display_result}")
+        print(f"Result: {result}")
         
         # Assert exact expected output
-        assert display_result == "25 minutes", f"Expected '25 minutes', got '{display_result}'"
+        assert result == "25 minutes", f"Expected '25 minutes', got '{result}'"
         print("✅ T-1 PASSED: Average ride time = 25 minutes")
         
     except Exception as e:
@@ -124,43 +110,36 @@ def test_t3_kilometres_women_rainy_june():
     """
     print("\n--- T-3: Kilometres by women on rainy days in June 2025 ---")
     
-    # Set grader mode to ensure exact output
-    os.environ['GRADER_MODE'] = '1'
-    
     question = "How many kilometres were ridden by women on rainy days in June 2025?"
     
     try:
-        # Initialize components
-        db = get_db()
-        schema = get_schema()
-        mapper = get_mapper()
-        sqlgen = get_sqlgen()
+        # Use the API endpoint to test the complete pipeline
+        import requests
+        import json
         
-        # Process the question
-        q = preprocess_question(question)
-        intent = parse_intent(q, schema)
-        intent = postprocess_llm_intent(intent)
-        intent = tweak_intent(intent, q)
-        intent = postprocess_intent(intent, question)
+        response = requests.post(
+            "http://api:8000/query",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"question": question}),
+            timeout=30
+        )
         
-        # Generate SQL and execute
-        user_terms = []
-        if isinstance(intent['select'], list):
-            user_terms.extend(intent['select'])
-        else:
-            user_terms.append(intent['select'])
-        user_terms.extend([w['col'] for w in intent.get('where',[])])
+        if response.status_code != 200:
+            print(f"❌ API request failed with status {response.status_code}")
+            raise Exception(f"API request failed: {response.text}")
         
-        mappings = mapper.map(user_terms)
-        sql, params = sqlgen.generate(intent, mappings)
-        result = db.execute(sql, params)
-        
-        # Format result
-        display_result = format_chatbot_response(result, question)
+        result = response.json()
+        display_result = result.get("result")
+        sql = result.get("sql")
+        error = result.get("error")
         
         print(f"Question: {question}")
         print(f"SQL: {sql}")
         print(f"Result: {display_result}")
+        
+        if error:
+            print(f"❌ API returned error: {error}")
+            raise Exception(f"API error: {error}")
         
         # Assert exact expected output
         assert display_result == "6.8 km", f"Expected '6.8 km', got '{display_result}'"
