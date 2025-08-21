@@ -1,6 +1,71 @@
 import streamlit as st
 import requests
 import time
+import os
+import json
+import traceback
+
+def env_float(name: str, default: float) -> float:
+    v = os.getenv(name, "")
+    if not v:
+        return float(default)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float(default)
+
+# Initialize session state first (before any st.markdown calls)
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "pending_response" not in st.session_state:
+    st.session_state.pending_response = False
+if "last_user_input" not in st.session_state:
+    st.session_state.last_user_input = None
+
+# API Configuration
+API_BASE_URL = (os.getenv("API_BASE_URL", "http://api:8000") or "http://api:8000").rstrip("/")
+CONNECT_TIMEOUT = env_float("API_CONNECT_TIMEOUT", 5.0)
+READ_TIMEOUT = env_float("API_READ_TIMEOUT", 60.0)
+
+def call_api(question: str):
+    url = f"{API_BASE_URL}/query"
+    headers = {"Content-Type": "application/json"}
+    payload = {"question": question or ""}
+
+    t0 = time.time()
+    try:
+        # Separate connect/read timeouts; 5s connect, 60s read by default
+        resp = requests.post(url, headers=headers, json=payload, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+    except requests.exceptions.Timeout as e:
+        st.error(f"API timeout after {READ_TIMEOUT}s. Details: {e}")
+        st.code(traceback.format_exc())
+        return None
+    except requests.exceptions.RequestException as e:
+        # Catches ConnectionError, SSLError, etc.
+        st.error("Failed to reach API (RequestException).")
+        st.code(f"{e}\n\n{traceback.format_exc()}")
+        return None
+
+    elapsed = time.time() - t0
+    if resp.status_code != 200:
+        st.error(f"API returned non-200 status: {resp.status_code}")
+        return None
+
+    try:
+        data = resp.json()
+    except Exception:
+        st.error("API returned invalid JSON.")
+        return None
+
+    # Debug info removed for clean UI
+
+    # Validate contract
+    if not isinstance(data, dict) or not {"sql","result","error"} <= set(data.keys()):
+        st.error("API contract mismatch. Expected keys: sql, result, error.")
+        st.json(data)
+        return None
+
+    return data
 
 # Custom dark blue theme and minimalistic CSS
 st.markdown(
@@ -84,13 +149,6 @@ bike_avatar_svg = '''
 st.markdown(bike_logo_svg, unsafe_allow_html=True)
 st.markdown('<h2 style="text-align:center; color:#fff; font-family:sans-serif; margin-bottom: 0.5em;">Bikeshare Chatbot</h2>', unsafe_allow_html=True)
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "pending_response" not in st.session_state:
-    st.session_state.pending_response = False
-if "last_user_input" not in st.session_state:
-    st.session_state.last_user_input = None
-
 for msg in st.session_state.chat_history:
     if msg["role"] == "user":
         st.markdown(f'<div class="user-bubble">{msg["content"]}</div>', unsafe_allow_html=True)
@@ -106,24 +164,26 @@ if user_input and not st.session_state.pending_response:
     st.rerun()
 
 if st.session_state.pending_response and st.session_state.last_user_input:
-    with st.spinner("Assistant is thinking…"):
+    with st.spinner("Querying..."):
         try:
-            resp = requests.post(
-                "http://localhost:8000/query",
-                json={"question": st.session_state.last_user_input},
-                timeout=30
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("error"):
-                    answer = data["error"]
-                else:
-                    answer = data.get("result")
-            else:
-                answer = "Error: Could not reach backend."
-        except Exception:
-            answer = "Error: Backend not available."
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            data = call_api(st.session_state.last_user_input)
+        except Exception as e:
+            st.error(f"Exception in call_api: {e}")
+            st.code(traceback.format_exc())
+            data = None
+    
+    if data is None:
+        st.error("Failed to get response from API")
         st.session_state.pending_response = False
         st.session_state.last_user_input = None
-        st.rerun()
+        st.stop()
+    
+    if data.get("error"):
+        answer = data["error"]
+    else:
+        answer = data.get("result", "No result returned")
+    
+    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    st.session_state.pending_response = False
+    st.session_state.last_user_input = None
+    st.rerun()

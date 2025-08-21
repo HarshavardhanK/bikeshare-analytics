@@ -31,9 +31,11 @@ services:
     restart: unless-stopped
   frontend:
     build: .
-    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.fileWatcherType none
     environment:
-      API_BASE_URL: http://api:8000
+      API_BASE_URL: "http://api:8000"
+      API_CONNECT_TIMEOUT: "5"
+      API_READ_TIMEOUT: "60"
       PYTHONUNBUFFERED: 1
     ports: ["8501:8501"]
     depends_on:
